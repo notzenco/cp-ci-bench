@@ -1,0 +1,55 @@
+name: bench
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        required: true
+permissions:
+  contents: read
+jobs:
+  source:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      NEXT_TELEMETRY_DISABLED: '1'
+      SOURCE_SHA: ${{ inputs.source_sha }}
+    steps:
+      - run: '[[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]'
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: umbra-me/umbra-control-plane
+          ref: ${{ inputs.source_sha }}
+          ssh-key: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          persist-credentials: false
+          submodules: false
+          path: src
+          show-progress: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: src/.node-version
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14.7'
+      - name: Tools
+        run: |
+          set -euo pipefail
+          npm install -g --silent pnpm@11.24.0 >/dev/null 2>&1
+          rustup toolchain install 1.98.1 --profile minimal -c rustfmt,clippy >/dev/null 2>&1
+          rustup default 1.98.1 >/dev/null 2>&1
+          python3 -m pip install -q --disable-pip-version-check --no-deps 'PyYAML==6.0.3' >/dev/null 2>&1
+          command -v zsh >/dev/null || (sudo apt-get update -qq >/dev/null 2>&1 && sudo apt-get install -y -qq --no-install-recommends zsh >/dev/null 2>&1)
+          nproc
+      - name: Source checks (output suppressed)
+        working-directory: src
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/cargo
+        run: |
+          set +e
+          start=$(date +%s)
+          python3 scripts/local-ci.py --scope source --output "$RUNNER_TEMP/out" > "$RUNNER_TEMP/log.txt" 2>&1
+          status=$?
+          echo "elapsed_seconds=$(( $(date +%s) - start )) exit=$status"
+          grep -E '^(PASS|FAIL|WARN|SKIP)' "$RUNNER_TEMP/log.txt" | cut -c1-40 | sort | uniq -c | sort -rn | head -5
+          grep -cE '^PASS' "$RUNNER_TEMP/log.txt" | sed 's/^/pass_lines=/'
+          grep -cE '^FAIL' "$RUNNER_TEMP/log.txt" | sed 's/^/fail_lines=/'
+          exit $status
