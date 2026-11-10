@@ -1,0 +1,75 @@
+name: Private source CI
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact 40-character private source commit
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ inputs.source_sha }}
+  cancel-in-progress: true
+
+jobs:
+  source:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      NEXT_TELEMETRY_DISABLED: '1'
+      SOURCE_SHA: ${{ inputs.source_sha }}
+    steps:
+      - name: Validate source revision
+        run: '[[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]'
+
+      - name: Check out private source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: umbra-me/umbra-control-plane
+          ref: ${{ inputs.source_sha }}
+          ssh-key: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          persist-credentials: false
+          submodules: false
+          path: src
+          show-progress: false
+
+      - name: Verify private source revision
+        working-directory: src
+        run: '[[ "$(git rev-parse HEAD)" == "$SOURCE_SHA" ]]'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: src/.node-version
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14.7'
+
+      - name: Install tools (output suppressed)
+        run: |
+          set -euo pipefail
+          npm install -g --silent pnpm@11.24.0 >/dev/null 2>&1
+          rustup toolchain install 1.98.1 --profile minimal -c rustfmt,clippy >/dev/null 2>&1
+          rustup default 1.98.1 >/dev/null 2>&1
+          python3 -m pip install -q --disable-pip-version-check --no-deps 'PyYAML==6.0.3' >/dev/null 2>&1
+          command -v zsh >/dev/null || (sudo apt-get update -qq >/dev/null 2>&1 && sudo apt-get install -y -qq --no-install-recommends zsh >/dev/null 2>&1)
+
+      # Only check names and PASS/FAIL reach this public log; the full
+      # output stays on the runner and is discarded with it.
+      - name: Standalone source checks (output suppressed)
+        working-directory: src
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/cargo
+        run: |
+          set +e
+          start=$(date +%s)
+          python3 scripts/local-ci.py --scope source --output "$RUNNER_TEMP/out" > "$RUNNER_TEMP/log.txt" 2>&1
+          status=$?
+          echo "elapsed_seconds=$(( $(date +%s) - start )) exit=$status"
+          echo "pass_checks=$(grep -cE '^PASS' "$RUNNER_TEMP/log.txt")"
+          echo "fail_checks=$(grep -cE '^FAIL' "$RUNNER_TEMP/log.txt")"
+          grep -E '^FAIL' "$RUNNER_TEMP/log.txt" | cut -d' ' -f1-2 | cut -c1-60
+          exit $status
