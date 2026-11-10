@@ -1,4 +1,5 @@
 name: Private source CI
+run-name: source ${{ inputs.source_sha }}
 
 on:
   workflow_dispatch:
